@@ -1,0 +1,427 @@
+---
+title: "Videogames dataset analysis and visualisation"
+author: "Isaac Kelly Ramirez"
+output: 
+  html_document:
+    code_folding: "hide"
+    toc: true
+    toc_depth: 3
+    number_sections: TRUE
+    toc_float:
+      smooth_scroll: FALSE
+      collapsed: FALSE
+date: "30/04/2021"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Introduction
+In this report i analysed the Ba_videogames dataset, provided to me in the Business analytics class, using techniques such as data preprocessing, data visualization utilizing different types of graphs, and statistical methods.
+
+## new methods
+The two methods that i utilized in my evidence were 
+* the Predictive mean matching imputation, from the mice library, used to impute the missing values in the numerical columns 
+and
+* the chi-squared significance test, used to find significance between variables (columns)
+
+# libraries 
+the libraries that will be used in this document 
+```{r, results="hide", warning=FALSE}
+library(dplyr)
+library(stringr)
+library(assertive)
+library(ggplot2)
+library(lubridate)
+library(readxl)
+library(forcats)
+library(tidyr)
+library(qdapTools)
+library(mice)
+library("tm") 
+library("SnowballC")
+library("wordcloud")
+library("RColorBrewer")
+theme_set(theme_minimal())
+```
+
+# The data
+The Dataset called its imported 'BA_videogames', it is stored as an excel file
+```{r}
+vgsales = read_excel("vgsales_original.xlsx")
+```
+The 'BA_videogames' dataset provides relevant information about thousands of videogames, their names, publisher, the console it was published for, year of publication, genre and its sales, in north america, europe, japan, and the rest of the world, and the total sales worldwide
+
+First glimpse at the dataset
+```{r}
+summary(vgsales)
+```
+## Data preprocessing
+We see that the dataset contains 12 columns and 16,622 rows
+Most of the columns contain characters as its datatype
+Some columns like year, sales and rating should have numeric as its dataype
+lets start with the year column
+```{r}
+vgsales = vgsales %>% mutate(Year_t = str_remove(Year, "year "),
+                             Year_n = as.numeric(Year_t))
+vgsales = select(vgsales, -c("Year_t", "Year"))
+str(vgsales$Year_n)
+```
+The japan sales column has negative values, those should be converted to Na's
+```{r}
+vgsales$Japan_Sales <- replace(vgsales$Japan_Sales, which(vgsales$Japan_Sales < 0), NA)
+assert_all_are_in_closed_range(vgsales$Consumer_rating, lower=0, upper = 1000)
+#to check if there are negative values
+```
+
+
+the column won an award should be revised too
+```{r}
+vgsales$Won_an_award = vgsales$Won_an_award %>% as.factor()
+vgsales$Won_an_award %>% unique()
+# The values are correct, but i would like to turn them into numbers
+# I will use a label encoder for that purpose, from super ML
+library(superml)
+lbl = LabelEncoder$new()
+vgsales$Won_an_award <- lbl$fit_transform(vgsales$Won_an_award)
+
+```
+
+A new column, year_n with year as a number has been added to the dataframe, i tried to add the year as a date but R only accepts Date dataypes with day,year and month; but not the month by itself
+
+Lets check now that the values inside the year are not out of range
+```{r}
+ggplot(vgsales, aes(Year_n)) +
+  geom_histogram()
+```
+There arent any values registered past 2021, so they are all in a correct range;
+lets run the same check in the consumer rating, there shouldnt be any values below 0 or above 100
+```{r}
+ggplot(vgsales, aes(Consumer_rating)) +
+  geom_histogram()
+nrow(vgsales[vgsales$Consumer_rating>100|vgsales$Consumer_rating<0, ]) #First way to check 
+
+assert_all_are_in_closed_range(vgsales$Consumer_rating, lower=0, upper = 100) #Second way to check
+```
+We cant identify any values below 0 and above 100, so its correct.
+
+We choose the next columns that will be converted to a numeric data type
+```{r}
+vgsales_num = vgsales %>% select(NorthAmerica_Sales, Europe_Sales, Japan_Sales, RestofWorld_Sales, Total_Sales, Consumer_rating)
+```
+
+Then lapply applies the as.numeric function to every value in the said columns
+```{r}
+vgsales_num = lapply(vgsales_num, as.numeric)
+```
+
+We compare the quantity of Na's in both the original dataframe and the only numeric values dataframe
+ideally the ammount of Na's added by the change of datatype should be a high value
+```{r}
+sapply(vgsales, function(x) sum(is.na(x)))
+sapply(vgsales_num, function(x) sum(is.na(x))) 
+#This step adds a bunch of Nas to the dataframe, the reason might be a typo, or a comma inside the value
+```
+
+We merge the two datasets
+First we remove the columns that we transformed into numeric values
+```{r}
+vgsales = vgsales %>% select(-6:-10)
+vgsales = vgsales %>% select(-c("NorthAmerica_Sales"))
+```
+
+We use cbind to join them side by side
+```{r}
+vgsales = cbind(vgsales,vgsales_num)
+sapply(vgsales, class)
+```
+We verify that the joint was succesfull
+
+Lets check for duplicates
+```{r}
+sum(duplicated(vgsales))
+```
+It appears to be 7 duplicated values, so lets delete them
+```{r}
+vgsales = distinct(vgsales)
+sum(duplicated(vgsales))
+```
+There arent any duplicated values anymore
+
+# Imputation
+Lets see first, how many missing values do we have in each column
+```{r}
+sapply(vgsales, function(x) sum(is.na(x)))
+```
+The sales columns seem to have lots of Na's 
+I will use "predictive mean matching", from the "mice" package, since this one method runs on numeric variables
+
+## MICE imputation using Pmm
+```{r,results="hide"}
+#mice documentation: https://www.rdocumentation.org/packages/mice/versions/3.13.0/topics/mice
+imp_data = mice(vgsales, m=1, maxit=50,method="pmm", seed=500)
+```
+Lets have a summary of our imputed data, and assing the one resulting imputed dataframe to Vgsales
+```{r}
+summary(imp_data)
+vgsales = complete(imp_data,1)
+```
+Lets check again if there are any remaining na's
+```{r}
+sapply(vgsales, function(x) sum(is.na(x)))
+```
+The na's have been completly obliterated from our data
+
+Converting columns to levels
+```{r}
+columns = c("Publisher","Genre","Console")
+vgsales[columns] = lapply(vgsales[columns], as.factor)
+sapply(vgsales, class)
+```
+
+# Part 2 : analysis
+### Summary after imputation
+```{r}
+summary(vgsales)
+```
+
+### The historical sales average in the regions of the world 
+```{r}
+library(qdapTools)
+avg_sales = lapply(vgsales[,7:11], mean) %>% list2df(col1="Sales",col2="Region")
+avg_sales
+  ggplot(avg_sales, aes(x=Region, y=Sales ,fill=Region)) + geom_col() +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(
+        face="bold", color="#993333", size=8, angle=35)) +
+    labs(title= "Average sales per region") +
+    geom_text(aes(label =sprintf("%0.2f", round(Sales, digits = 2))), vjust = -0.5)
+
+```
+
+## Years with the highest sales
+```{r}
+highest_sales_year = vgsales %>% 
+  select(Total_Sales, Year_n) %>% arrange(desc(Total_Sales)) %>% head(3)
+highest_sales_year
+ggplot(vgsales, aes(Year_n, y=after_stat(density), fill=..count..)) +
+  geom_histogram() + 
+  stat_bin( geom="text", aes(label=..count..), size=3.8) +
+  geom_density(alpha=.02, fill="#FF5555") +
+  labs(title= "Sales per year", x="Year") + scale_fill_gradient(low="blue", high="red")+ scale_x_continuous(breaks = scales::pretty_breaks(n = 40)) + theme(axis.text.x = element_text(face="bold", color="#993333", size=8, angle=45))
+# mistake with labels and values
+```
+
+2006 six was the year with the highest sales, with 82 million dollars in sales, followed by 1985 with 40 millions.
+
+## Biggest market or region with the highest sales overall
+```{r}
+sum_sales = lapply(vgsales[,7:11], sum) %>% list2df(col1="Sales",col2="Region")
+  ggplot(sum_sales, aes(x=Region, y= Sales ,fill=Region)) +
+    geom_col() +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(
+        face="bold", color="#993333", size=8, angle=35)) +
+    labs(title= "Total sales per region") +
+    geom_text(aes(label =sprintf("%0.2f", round(Sales, digits = 2))), vjust = -0.5)
+```
+
+As shown by the average sales per region and the total sales per region, the US has the biggest demand for videogames, almost doubling the sales in Europe, this market should be at aim for videogame companies trying to release a bestseller game.
+
+## The best sellers historically
+```{r}
+best_sellers = vgsales %>% 
+  arrange(desc(Total_Sales))
+best_sellers = head(best_sellers,5)
+best_sellers
+```
+Wii sports was the best selling game in the history of videogames, with 82 million sales a consumer rating of 99 and of course an award! every game in this list has won an award too, except for wii sports
+
+## outliers
+
+```{r}
+vgamesout = vgsales %>%
+  mutate(zscore_TSales = scale(Total_Sales))
+vgamesout = vgamesout %>% 
+  filter(zscore_TSales > 3)# | zscore_TSales < 3)
+table(vgamesout$Name)
+```
+Here we have a list of all the games that are considered outliers due to their amazing sales performance, their sales performed over the zcore 3 times.
+
+
+# Genre analysis
+## Most successful genre historically (based on sales)
+```{r}
+all_time_genre = vgsales %>%
+  group_by(Genre) %>%
+  summarise(Sales = sum(Total_Sales)) %>% arrange(desc(Sales))
+all_time_genre %>% ggplot(aes(x=Genre, y=Sales, fill=Genre))+
+  geom_col() + 
+  geom_text(aes(label = Sales), vjust = -0.5) + 
+  labs(title= "Sales per genre (worldwide)", x= element_blank()) +
+  geom_hline(yintercept = mean(all_time_genre$Sales), colour="red", show.legend = TRUE) +
+  theme(axis.text.x = element_text(face="bold", angle=80),legend.position = "none")
+```
+Worldwide, the action genre seems to be the one with the highest demand from the gamers, followed by sports, and strategy is the one with the lowest sales 
+
+## Most succesfull genre per region (based on sales)
+```{r}
+Japan_genre = vgsales %>% group_by(Genre) %>% summarise(Japan_Sales=sum(Japan_Sales)) 
+Na_genre = vgsales %>% group_by(Genre) %>% summarise(Na_sales=sum(NorthAmerica_Sales))
+Europe_genre = vgsales %>% group_by(Genre) %>% summarise(Europe_sales=sum(Europe_Sales))
+RoW_genre = vgsales %>% group_by(Genre) %>% summarise(RoW_sales=sum(RestofWorld_Sales)) 
+facet= left_join(Japan_genre, Na_genre) %>% left_join(Europe_genre) %>% left_join(RoW_genre)
+facet = facet %>% gather(key = Sales, value = Value, Japan_Sales:RoW_sales)
+```
+
+```{r}
+ggplot(facet, aes(x=Genre, fill=Sales, y=Value))+ 
+  geom_col(position= "dodge")+ facet_wrap(~Sales)+
+  theme(axis.text.x = element_text(face="bold"),legend.position = "none")+
+  scale_x_discrete(guide = guide_axis(n.dodge=3)) +
+  labs(title= "Sales per genre (Regional)")
+```
+It seems like action is the best selling genre in every country, except for Japan, where role playing has the lead in total sales
+
+## Most succesfull genre by customer rating
+```{r}
+rating_per_genre = vgsales %>% group_by(Genre) %>% summarise(average_rating= mean(Consumer_rating))
+ggplot(rating_per_genre, aes(x=Genre, y= average_rating, fill=Genre)) +
+  geom_col() + 
+  theme(legend.position = "none")+
+  geom_text(aes(label =sprintf("%0.2f", round(average_rating, digits = 2))), vjust = -0.5)+
+  labs(title= "Rating per genre")+
+  geom_hline(yintercept = mean(rating_per_genre$average_rating), colour="red", show.legend = TRUE)
+```
+
+We can see that platform its the genre with the highest average in customer rating! followed by shooters and sports, adventure seems to be the lowest rated genre in the games industry, the adventure, puzzle, simulation and strategy genres are performing under the average
+
+# Console analysis
+## Games per console
+```{r}
+gp_console = table(vgsales$Console)
+ggplot(vgsales, aes(Console,stat="count", fill=Console))+
+  geom_histogram(stat="count")+
+  theme(legend.position = "none")+
+  scale_x_discrete(guide = guide_axis(n.dodge=3))+
+  labs(title = "Games per Console")
+```
+
+The ps2 and the DS nintendo are the two consoles with the most games, the last generation consoles, xbox one, playstation 4, etc, seem to have a small ammount of published games
+
+## Customer rating per console
+```{r}
+ggplot(vgsales, aes(x=Console, y=Consumer_rating, fill=Console))+
+  geom_boxplot() + theme(legend.position = "none") +
+  scale_x_discrete(guide = guide_axis(n.dodge=3))
+```
+
+The NES is the console (or was) with the highest average rating, followed by the 2600, some consoles like the 3DO and the PC have a very low average, but that could also mean that there is a myriad of low quality games for that console specifically, and thats hurting its average.
+
+# Correlation
+## Total sales and awards
+### Which column has the highest correlation with total sales (excluding regional sales)?
+```{r}
+vg_cor = vgsales%>%
+  select(Won_an_award, Consumer_rating, Year_n, Total_Sales)
+cor = cor(vg_cor)
+cor
+```
+We can see that the consumer rating shows the highest correlation to the overall sales of a game, with a positive correlation of 40%, its interesting to mention that the sales have the highest correlation with the game awards, not the consumer rating
+
+## Chi squared test
+### Total sales & Consumer rating
+```{r}
+chisq.test(vgsales$Consumer_rating, vgsales$Total_Sales, correct=FALSE)
+```
+The Pvalue = 0, so the Consumer rating and the sales are statistically significantly associated
+
+### Won an award & Consumer rating
+```{r}
+chisq.test(vgsales$Consumer_rating, vgsales$Won_an_award, correct=FALSE)
+```
+The Pvalue = 0, so the Consumer rating and the awards are statistically significantly associated
+
+### Total sales & Consumer rating
+```{r}
+chisq.test(vgsales$Won_an_award, vgsales$Total_Sales, correct=FALSE)
+```
+The Pvalue = 0, so the awards and the total sales are statistically significantly associated
+
+
+### Which region its the most important overall for the total sales of a game
+```{r}
+vg_cor = vgsales%>%
+  select(NorthAmerica_Sales, RestofWorld_Sales, Europe_Sales, Japan_Sales, Total_Sales)
+cor = cor(vg_cor)
+cor
+```
+North America seems to be the region that ammounts the highest correlation to the total sales, with 91% positive correlation, followed by Europe
+
+# Game titles analysis
+First lets lower the text and turn the column into characters, also some libraries that will be used
+```{r}
+text = tolower(as.character(vgsales$Name))
+```
+Creating a corpus with the text
+```{r}
+text = Corpus(VectorSource(text))
+```
+
+### Word matrix
+lets remove the numbers, stopwords, punctuation and the whitespace from the title; and then lets create a matrix with words from the text 
+```{r}
+text= tm_map(text, removeNumbers)
+text= tm_map(text, removeWords, stopwords("english"))
+text= tm_map(text,removePunctuation)
+text= tm_map(text,stripWhitespace) 
+
+text_tm = TermDocumentMatrix(text)
+m <- as.matrix(text_tm)
+v <- sort(rowSums(m),decreasing=TRUE)
+d <- data.frame(word = names(v),freq=v)
+head(d, 5)
+```
+The words, world, pro, game, super and star are the most common words used in the game titles, with world appearing 400 hundred times 
+
+### Wordcloud
+
+finally lets create a wordcloud with the most common words in the videogames titles
+```{r}
+set.seed(1234)
+wordcloud(words = d$word, freq = d$freq, min.freq = 100,
+          max.words=Inf, random.order=T, rot.per=0.5, colors=brewer.pal(8,"Dark2"))
+```
+
+We can see some game characters appear in the word cloud, such as mario and the mention of gundam, events such as battles, wars, adventures and tours seem to be common topics in the theme of games, there are also some sports like soccer, nba, baseball, nfl, etc.
+
+# Business recomendations
+
+The best selling game would be an Action game, as action was the best selling genre in three regions, and outperformed the other genres in worldwide sales as well, as the correlation reports shows the american market is the one to aim for.
+if you were to release a role play game, the japanese market should be the one to go for
+
+The US videogame industry is also the biggest one, as shown by the average sales and the total sales per region; videogames in general tend to perform better in the US than in Europe, Japan and the rest of the world, if your action game has a chance to be banned in the US some of its features should change to make it more appealing to this market.
+
+In the case that you wanted your game to have a better rating you should aim for a plataformer game, as this is the genre with the best ratings, further exploration needs to be done, as this fact by itself could mean lots of things.
+factors such as consumer rating are higly significant as shown by the chi-squared test, for the sales of a game, the most important factors for a game customer need to be researched too for improved decision making
+
+An award winning game tends to be tied to a good customer rating and a big ammount of total sales, these two factors need to be taken into consideration if you are aiming for the awards.
+
+
+### Reference list
+Function reference. (2021). Retrieved April 30, 2021, from Tidyverse.org website: https://ggplot2.tidyverse.org/reference/
+
+dplyr package - RDocumentation. (2018). Retrieved April 30, 2021, from Rdocumentation.org website: https://www.rdocumentation.org/packages/dplyr/versions/0.7.8
+
+mice function - RDocumentation. (2018). Retrieved April 30, 2021, from Rdocumentation.org website: https://www.rdocumentation.org/packages/mice/versions/3.13.0/topics/mice
+
+chisq.test function - RDocumentation. (2019). Retrieved April 30, 2021, from Rdocumentation.org website: https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/chisq.test
+
+
+
+
+
+
+
